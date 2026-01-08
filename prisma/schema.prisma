@@ -1,0 +1,387 @@
+// Coffee Shop Multi-Tenant SaaS - Updated Schema with Layout Support
+// Last Updated: 2026-01-08
+// Changes: Added layoutTemplate, layoutConfig, hasCustomDesign, customDesignPath
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DATABASE_URL_DIRECT")
+}
+
+// ============================================
+// ENUMS
+// ============================================
+
+enum PlanType {
+  FREE
+  STARTER
+  BUSINESS
+  ENTERPRISE
+  CUSTOM        // For clients with fully custom designs
+}
+
+enum UserRole {
+  OWNER
+  ADMIN
+  MANAGER
+  STAFF
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  PREPARING
+  READY
+  COMPLETED
+  CANCELLED
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+enum PaymentMethod {
+  CASH
+  CREDIT_CARD
+  DEBIT_CARD
+  E_WALLET
+  BANK_TRANSFER
+  QRIS
+}
+
+// ============================================
+// CORE MULTI-TENANT TABLES
+// ============================================
+
+model Business {
+  id        String   @id @default(cuid())
+  slug      String   @unique
+  name      String
+  logo      String?
+  colors    Json?    @default("{\"primary\": \"#6B4423\", \"secondary\": \"#D4A574\"}")
+  
+  // Plan & Limits
+  plan      PlanType @default(FREE)
+  limits    Json     @default("{\"maxProducts\": 10, \"maxOrders\": 50, \"maxUsers\": 2}")
+  
+  // ✨ NEW: Layout Configuration
+  layoutTemplate  String  @default("classic")  // classic, modern, luxury
+  layoutConfig    Json?   @default("{}")       // Custom layout settings
+  
+  // ✨ NEW: Custom Design Support
+  hasCustomDesign  Boolean @default(false)     // true if using custom components
+  customDesignPath String?                     // Path to custom components folder (e.g., "starbucks")
+  
+  // Subscription tracking
+  planExpiresAt DateTime?
+  isActive      Boolean   @default(true)
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  users            User[]
+  categories       Category[]
+  products         Product[]
+  events           Event[]
+  customers        Customer[]
+  orders           Order[]
+  businessSettings BusinessSettings?
+
+  @@index([slug])
+  @@index([isActive])
+  @@index([plan])
+  @@map("businesses")
+}
+
+model User {
+  id         String   @id @default(cuid())
+  businessId String
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  
+  email    String
+  password String
+  role     UserRole @default(STAFF)
+  
+  name   String
+  avatar String?
+  
+  isActive  Boolean  @default(true)
+  lastLogin DateTime?
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([businessId, email])
+  @@index([businessId])
+  @@index([email])
+  @@map("users")
+}
+
+// ============================================
+// PRODUCT MANAGEMENT
+// ============================================
+
+model Category {
+  id           String   @id @default(cuid())
+  businessId   String
+  business     Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  
+  name         String
+  slug         String
+  icon         String?
+  displayOrder Int      @default(0)
+  isActive     Boolean  @default(true)
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  products Product[]
+
+  @@unique([businessId, slug])
+  @@index([businessId, displayOrder])
+  @@index([businessId, isActive])
+  @@map("categories")
+}
+
+model Product {
+  id          String   @id @default(cuid())
+  businessId  String
+  business    Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  categoryId  String
+  category    Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  
+  name        String
+  slug        String
+  description String?  @db.Text
+  image       String?
+  price       Decimal  @db.Decimal(10, 2)
+  stock       Int      @default(0)
+  
+  hasVariants Boolean  @default(false)
+  isAvailable Boolean  @default(true)
+  isFeatured  Boolean  @default(false)
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  variants   ProductVariant[]
+  orderItems OrderItem[]
+
+  @@unique([businessId, slug])
+  @@index([businessId, categoryId])
+  @@index([businessId, isAvailable])
+  @@index([businessId, isFeatured])
+  @@map("products")
+}
+
+model ProductVariant {
+  id              String  @id @default(cuid())
+  productId       String
+  product         Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  
+  name            String
+  priceAdjustment Decimal  @db.Decimal(10, 2) @default(0)
+  stock           Int      @default(0)
+  
+  attributes      Json?    @default("{}")
+  isAvailable     Boolean  @default(true)
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([productId])
+  @@index([productId, isAvailable])
+  @@map("product_variants")
+}
+
+// ============================================
+// EVENTS MANAGEMENT
+// ============================================
+
+model Event {
+  id          String   @id @default(cuid())
+  businessId  String
+  business    Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  
+  title       String
+  description String?  @db.Text
+  image       String?
+  
+  startDate DateTime
+  endDate   DateTime
+  isAllDay  Boolean  @default(false)
+  location  String?
+  
+  isActive  Boolean  @default(true)
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([businessId])
+  @@index([businessId, startDate])
+  @@index([businessId, isActive])
+  @@map("events")
+}
+
+// ============================================
+// CUSTOMER & ORDERS
+// ============================================
+
+model Customer {
+  id         String   @id @default(cuid())
+  businessId String
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  
+  name  String
+  email String?
+  phone String?
+  
+  totalOrders Int     @default(0)
+  totalSpent  Decimal @db.Decimal(12, 2) @default(0)
+  
+  points      Int      @default(0)
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  orders Order[]
+
+  @@unique([businessId, email])
+  @@unique([businessId, phone])
+  @@index([businessId])
+  @@index([businessId, totalSpent(sort: Desc)])
+  @@map("customers")
+}
+
+model Order {
+  id         String   @id @default(cuid())
+  businessId String
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  customerId String?
+  customer   Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  
+  orderNumber String   @unique
+  
+  subtotal Decimal @db.Decimal(12, 2)
+  tax      Decimal @db.Decimal(12, 2) @default(0)
+  total    Decimal @db.Decimal(12, 2)
+  
+  status        OrderStatus   @default(PENDING)
+  paymentMethod PaymentMethod @default(CASH)
+  paymentStatus PaymentStatus @default(PENDING)
+  
+  customerName  String?
+  customerPhone String?
+  customerEmail String?
+  
+  deliveryAddress String?
+  deliveryNotes   String?
+  deliveryFee     Decimal?    @db.Decimal(10, 2)
+  
+  confirmedAt DateTime?
+  completedAt DateTime?
+  cancelledAt DateTime?
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items OrderItem[]
+
+  @@index([businessId])
+  @@index([businessId, status])
+  @@index([businessId, createdAt(sort: Desc)])
+  @@index([customerId])
+  @@index([orderNumber])
+  @@map("orders")
+}
+
+model OrderItem {
+  id        String @id @default(cuid())
+  orderId   String
+  order     Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+  
+  productName String
+  variantName String?
+  
+  quantity  Int
+  unitPrice Decimal @db.Decimal(10, 2)
+  subtotal  Decimal @db.Decimal(10, 2)
+  
+  notes String?
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([orderId])
+  @@index([productId])
+  @@map("order_items")
+}
+
+// ============================================
+// BUSINESS SETTINGS
+// ============================================
+
+model BusinessSettings {
+  id         String   @id @default(cuid())
+  businessId String   @unique
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  
+  operatingHours Json @default("{}")
+  
+  deliveryFee Decimal @db.Decimal(10, 2) @default(0)
+  taxRate     Decimal @db.Decimal(5, 2)  @default(10)
+  minOrder    Decimal @db.Decimal(10, 2) @default(0)
+  
+  allowOnlineOrder  Boolean @default(true)
+  allowGuestCheckout Boolean @default(true)
+  requireCustomerPhone Boolean @default(false)
+  
+  emailNotifications Json @default("{}")
+  smsNotifications   Json @default("{}")
+  
+  paymentGatewayConfig Json? @default("{}")
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([businessId])
+  @@map("business_settings")
+}
+
+// ============================================
+// NOTES FOR LAYOUT CONFIGURATION
+// ============================================
+
+// layoutConfig JSON structure example:
+// {
+//   "navbar": {
+//     "logoPosition": "left",        // left, center, hero
+//     "menuPosition": "right",       // left, center, right
+//     "style": "horizontal"          // horizontal, vertical
+//   },
+//   "hero": {
+//     "layout": "full",              // full, split, none
+//     "showLogo": false,             // true/false
+//     "height": "large"              // small, medium, large
+//   },
+//   "menu": {
+//     "layout": "grid",              // grid, list, carousel
+//     "columns": 3,                  // 2, 3, 4
+//     "cardStyle": "modern"          // classic, modern, minimal
+//   },
+//   "sections": {
+//     "order": ["hero", "about", "menu", "events"],
+//     "showAbout": true,
+//     "showEvents": true
+//   }
+// }
